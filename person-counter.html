@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PeopleCount — Live Person Detector</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #050508;
+    --hud: rgba(0,255,180,0.9);
+    --hud-dim: rgba(0,255,180,0.4);
+    --hud-glow: rgba(0,255,180,0.15);
+    --danger: #ff3b5c;
+    --warn: #ffb800;
+    --safe: #00ffb4;
+    --text: #e0ffe8;
+    --scan: #00ffb4;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: 'Space Mono', monospace;
+    color: var(--text);
+  }
+
+  /* ── Camera layer ── */
+  #video {
+    position: fixed;
+    inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    z-index: 1;
+    transform: scaleX(-1); /* mirror front cam */
+  }
+
+  /* ── Scan line overlay ── */
+  #scanline {
+    position: fixed;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  #scanline::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, var(--scan), var(--scan), transparent);
+    opacity: 0;
+    animation: scan 3s linear infinite;
+    box-shadow: 0 0 20px 4px rgba(0,255,180,0.4);
+  }
+
+  #scanline.active::before { opacity: 0.8; }
+
+  @keyframes scan {
+    0%   { top: -4px; opacity: 0; }
+    5%   { opacity: 0.8; }
+    95%  { opacity: 0.8; }
+    100% { top: 100%; opacity: 0; }
+  }
+
+  /* ── Grid overlay ── */
+  .grid-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(0,255,180,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,180,0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  /* ── Vignette ── */
+  .vignette {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.7) 100%);
+  }
+
+  /* ── Corner brackets ── */
+  .corners {
+    position: fixed;
+    inset: 20px;
+    z-index: 4;
+    pointer-events: none;
+  }
+
+  .corner {
+    position: absolute;
+    width: 32px; height: 32px;
+    border-color: var(--hud);
+    border-style: solid;
+    opacity: 0.6;
+  }
+
+  .corner.tl { top: 0; left: 0; border-width: 2px 0 0 2px; }
+  .corner.tr { top: 0; right: 0; border-width: 2px 2px 0 0; }
+  .corner.bl { bottom: 0; left: 0; border-width: 0 0 2px 2px; }
+  .corner.br { bottom: 0; right: 0; border-width: 0 2px 2px 0; }
+
+  /* ── START SCREEN ── */
+  #startScreen {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.92);
+    gap: 0;
+  }
+
+  .logo-line {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(52px, 18vw, 90px);
+    color: var(--safe);
+    letter-spacing: 0.05em;
+    line-height: 1;
+    text-shadow: 0 0 40px rgba(0,255,180,0.6);
+    animation: flicker 4s ease-in-out infinite;
+  }
+
+  @keyframes flicker {
+    0%,100%{opacity:1} 92%{opacity:1} 93%{opacity:0.7} 94%{opacity:1} 97%{opacity:0.85} 98%{opacity:1}
+  }
+
+  .logo-sub {
+    font-size: 11px;
+    letter-spacing: 0.25em;
+    color: var(--hud-dim);
+    text-transform: uppercase;
+    margin-top: 6px;
+    margin-bottom: 48px;
+  }
+
+  .start-btn {
+    background: transparent;
+    border: 2px solid var(--safe);
+    color: var(--safe);
+    font-family: 'Space Mono', monospace;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    padding: 16px 40px;
+    border-radius: 4px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: color 0.2s, background 0.2s, box-shadow 0.2s;
+  }
+
+  .start-btn:hover, .start-btn:active {
+    background: var(--safe);
+    color: #050508;
+    box-shadow: 0 0 32px rgba(0,255,180,0.5);
+  }
+
+  .start-note {
+    margin-top: 20px;
+    font-size: 10px;
+    color: rgba(0,255,180,0.3);
+    letter-spacing: 0.08em;
+    text-align: center;
+    padding: 0 32px;
+  }
+
+  /* ── HUD TOP BAR ── */
+  #hud {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 10;
+    padding: 16px 20px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.75), transparent);
+  }
+
+  .hud-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 22px;
+    letter-spacing: 0.1em;
+    color: var(--safe);
+    text-shadow: 0 0 12px rgba(0,255,180,0.5);
+  }
+
+  .hud-status {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--hud-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--safe);
+    animation: blink 1.2s ease-in-out infinite;
+  }
+
+  .status-dot.idle { background: var(--warn); animation: none; }
+  .status-dot.analyzing { background: var(--safe); }
+  .status-dot.error { background: var(--danger); animation: none; }
+
+  @keyframes blink {
+    0%,100%{opacity:1} 50%{opacity:0.2}
+  }
+
+  /* ── BIG COUNT DISPLAY ── */
+  #countDisplay {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 10;
+    padding: 0 20px 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: linear-gradient(to top, rgba(0,0,0,0.85) 60%, transparent);
+  }
+
+  .count-label {
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--hud-dim);
+    margin-bottom: 4px;
+  }
+
+  .count-number {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(80px, 28vw, 140px);
+    line-height: 0.9;
+    letter-spacing: -0.02em;
+    color: var(--safe);
+    text-shadow: 0 0 60px rgba(0,255,180,0.5), 0 0 120px rgba(0,255,180,0.2);
+    transition: color 0.4s, text-shadow 0.4s;
+    position: relative;
+  }
+
+  .count-number.danger {
+    color: var(--danger);
+    text-shadow: 0 0 60px rgba(255,59,92,0.6), 0 0 120px rgba(255,59,92,0.2);
+  }
+
+  .count-number.warn {
+    color: var(--warn);
+    text-shadow: 0 0 60px rgba(255,184,0,0.5);
+  }
+
+  .count-number.zero {
+    color: var(--hud-dim);
+    text-shadow: none;
+  }
+
+  .count-unit {
+    font-size: 12px;
+    letter-spacing: 0.2em;
+    color: var(--hud-dim);
+    text-transform: uppercase;
+    margin-top: -4px;
+    margin-bottom: 12px;
+  }
+
+  /* ── AI RESPONSE CAPTION ── */
+  #caption {
+    font-size: 12px;
+    color: rgba(0,255,180,0.6);
+    text-align: center;
+    max-width: 320px;
+    line-height: 1.5;
+    min-height: 36px;
+    letter-spacing: 0.02em;
+    padding: 0 8px;
+    transition: opacity 0.4s;
+  }
+
+  /* ── ANALYZE BUTTON ── */
+  #analyzeBtn {
+    position: fixed;
+    right: 20px;
+    bottom: 50%;
+    transform: translateY(50%);
+    z-index: 10;
+    width: 62px; height: 62px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.5);
+    border: 2px solid var(--safe);
+    color: var(--safe);
+    font-size: 24px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, box-shadow 0.2s, transform 0.15s;
+    box-shadow: 0 0 20px rgba(0,255,180,0.25);
+  }
+
+  #analyzeBtn:active {
+    transform: translateY(50%) scale(0.92);
+    background: rgba(0,255,180,0.15);
+  }
+
+  #analyzeBtn.loading {
+    animation: rotate-btn 1s linear infinite;
+    opacity: 0.7;
+    pointer-events: none;
+  }
+
+  @keyframes rotate-btn { to { transform: translateY(50%) rotate(360deg); } }
+
+  /* ── AUTO TOGGLE ── */
+  #autoToggle {
+    position: fixed;
+    left: 20px;
+    bottom: 50%;
+    transform: translateY(50%);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+
+  .toggle-track {
+    width: 38px; height: 22px;
+    border-radius: 11px;
+    background: rgba(0,0,0,0.5);
+    border: 1.5px solid var(--hud-dim);
+    position: relative;
+    transition: border-color 0.2s, background 0.2s;
+  }
+
+  .toggle-track.on {
+    border-color: var(--safe);
+    background: rgba(0,255,180,0.15);
+  }
+
+  .toggle-thumb {
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--hud-dim);
+    transition: transform 0.2s, background 0.2s;
+  }
+
+  .toggle-track.on .toggle-thumb {
+    transform: translateX(16px);
+    background: var(--safe);
+  }
+
+  .toggle-label {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--hud-dim);
+  }
+
+  /* ── CAMERA FLIP BTN ── */
+  #flipBtn {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    z-index: 11;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.4);
+    border: 1.5px solid var(--hud-dim);
+    color: var(--hud-dim);
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.2s, color 0.2s;
+  }
+
+  #flipBtn:active { opacity: 0.6; }
+
+  /* ── HISTORY CHIPS ── */
+  #historyRow {
+    position: fixed;
+    top: 68px; left: 0; right: 0;
+    z-index: 10;
+    display: flex;
+    gap: 8px;
+    padding: 0 20px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  #historyRow::-webkit-scrollbar { display: none; }
+
+  .hist-chip {
+    flex-shrink: 0;
+    background: rgba(0,0,0,0.55);
+    border: 1px solid rgba(0,255,180,0.2);
+    border-radius: 100px;
+    padding: 4px 12px;
+    font-size: 11px;
+    color: var(--hud-dim);
+    animation: chipIn 0.3s ease;
+  }
+
+  @keyframes chipIn { from { opacity:0; transform: scale(0.85); } to { opacity:1; transform: scale(1); } }
+
+  .hist-chip .n { color: var(--safe); font-weight: 700; margin-right: 3px; }
+
+  /* ── HIDDEN CANVAS ── */
+  #canvas { display: none; }
+
+  /* ── PERMISSION ERROR ── */
+  #permError {
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.95);
+    padding: 32px;
+    text-align: center;
+    gap: 16px;
+  }
+
+  #permError.show { display: flex; }
+
+  .perm-icon { font-size: 48px; }
+  .perm-title { font-family: 'Bebas Neue'; font-size: 32px; color: var(--danger); letter-spacing: 0.05em; }
+  .perm-msg { font-size: 13px; color: var(--hud-dim); line-height: 1.7; max-width: 280px; }
+</style>
+</head>
+<body>
+
+<!-- Start Screen -->
+<div id="startScreen">
+  <div class="logo-line">PEOPLE<br>COUNT</div>
+  <div class="logo-sub">AI · Real-Time · Vision</div>
+  <button class="start-btn" onclick="startCamera()">▶ ACTIVATE CAMERA</button>
+  <div class="start-note">Tap to enable camera access.<br>Frames are sent to Claude AI for analysis.</div>
+</div>
+
+<!-- Permission Error -->
+<div id="permError">
+  <div class="perm-icon">📵</div>
+  <div class="perm-title">No Camera</div>
+  <div class="perm-msg">Camera permission was denied.<br>Please allow camera access in your browser settings, then reload the page.</div>
+</div>
+
+<!-- Camera -->
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
+
+<!-- Overlays -->
+<div class="grid-overlay"></div>
+<div class="vignette"></div>
+<div id="scanline"></div>
+
+<div class="corners">
+  <div class="corner tl"></div>
+  <div class="corner tr"></div>
+  <div class="corner bl"></div>
+  <div class="corner br"></div>
+</div>
+
+<!-- HUD Top -->
+<div id="hud">
+  <div class="hud-title">PEOPLE COUNT</div>
+  <div class="hud-status">
+    <div class="status-dot idle" id="statusDot"></div>
+    <span id="statusText">READY</span>
+  </div>
+</div>
+
+<!-- Camera flip -->
+<button id="flipBtn" onclick="flipCamera()" title="Flip camera">🔄</button>
+
+<!-- History -->
+<div id="historyRow"></div>
+
+<!-- Auto toggle -->
+<div id="autoToggle" onclick="toggleAuto()">
+  <div class="toggle-track" id="toggleTrack">
+    <div class="toggle-thumb"></div>
+  </div>
+  <div class="toggle-label">AUTO</div>
+</div>
+
+<!-- Manual analyze -->
+<button id="analyzeBtn" onclick="analyzeFrame()" title="Analyze">🔍</button>
+
+<!-- Bottom count display -->
+<div id="countDisplay">
+  <div class="count-label">PERSONS DETECTED</div>
+  <div class="count-number zero" id="countNum">—</div>
+  <div class="count-unit" id="countUnit">tap 🔍 to scan</div>
+  <div id="caption">Point your camera at people and press scan.</div>
+</div>
+
+<script>
+  let stream = null;
+  let facingMode = 'environment'; // back camera by default
+  let autoMode = false;
+  let autoInterval = null;
+  let isAnalyzing = false;
+  let history = [];
+
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const countNum = document.getElementById('countNum');
+  const countUnit = document.getElementById('countUnit');
+  const caption = document.getElementById('caption');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const scanline = document.getElementById('scanline');
+  const analyzeBtn = document.getElementById('analyzeBtn');
+
+  async function startCamera() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      document.getElementById('startScreen').style.display = 'none';
+    } catch (err) {
+      document.getElementById('startScreen').style.display = 'none';
+      document.getElementById('permError').classList.add('show');
+    }
+  }
+
+  async function flipCamera() {
+    facingMode = facingMode === 'environment' ? 'user' : 'environment';
+    video.style.transform = facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+    } catch (e) { console.error(e); }
+  }
+
+  function toggleAuto() {
+    autoMode = !autoMode;
+    const track = document.getElementById('toggleTrack');
+    if (autoMode) {
+      track.classList.add('on');
+      autoInterval = setInterval(() => {
+        if (!isAnalyzing) analyzeFrame();
+      }, 5000);
+      setStatus('AUTO', 'analyzing');
+    } else {
+      track.classList.remove('on');
+      clearInterval(autoInterval);
+      setStatus('READY', 'idle');
+    }
+  }
+
+  function setStatus(text, type) {
+    statusText.textContent = text;
+    statusDot.className = 'status-dot ' + type;
+  }
+
+  function captureFrame() {
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    if (facingMode === 'user') {
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(video, 0, 0);
+    return canvas.toDataURL('image/jpeg', 0.75).split(',')[1];
+  }
+
+  async function analyzeFrame() {
+    if (isAnalyzing || !stream) return;
+    isAnalyzing = true;
+    analyzeBtn.classList.add('loading');
+    scanline.classList.add('active');
+    setStatus('ANALYZING...', 'analyzing');
+    caption.style.opacity = '0.5';
+    caption.textContent = 'Scanning frame...';
+
+    let base64;
+    try {
+      base64 = captureFrame();
+    } catch (e) {
+      finishAnalysis();
+      caption.textContent = 'Could not capture frame.';
+      return;
+    }
+
+    try {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/jpeg', data: base64 }
+              },
+              {
+                type: 'text',
+                text: `Count the number of people (humans) visible in this image. Include partial people (e.g. only a head or shoulder visible at edge). Respond ONLY with a JSON object with exactly these fields:
+{
+  "count": <integer>,
+  "confidence": "high" | "medium" | "low",
+  "note": "<one short sentence about what you see>"
+}
+No markdown, no explanation, just the JSON.`
+              }
+            ]
+          }]
+        })
+      });
+
+      const data = await resp.json();
+      const raw = data.content.map(b => b.text || '').join('').trim()
+        .replace(/```json|```/g, '').trim();
+      const result = JSON.parse(raw);
+      displayCount(result);
+    } catch (err) {
+      caption.style.opacity = '1';
+      caption.textContent = 'Analysis failed. Check connection.';
+      setStatus('ERROR', 'error');
+    }
+
+    finishAnalysis();
+  }
+
+  function displayCount(result) {
+    const n = Math.max(0, parseInt(result.count) || 0);
+
+    // Number color based on count
+    countNum.className = 'count-number';
+    if (n === 0) countNum.classList.add('zero');
+    else if (n >= 10) countNum.classList.add('danger');
+    else if (n >= 5) countNum.classList.add('warn');
+
+    countNum.textContent = n;
+    countUnit.textContent = n === 1 ? 'person in frame' : 'persons in frame';
+
+    caption.style.opacity = '1';
+    caption.textContent = (result.note || '') + (result.confidence ? ` [${result.confidence} confidence]` : '');
+
+    // Pulse animation
+    countNum.style.transform = 'scale(1.08)';
+    setTimeout(() => countNum.style.transform = '', 200);
+
+    // Add to history
+    const now = new Date();
+    const timeStr = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0') + ':' + now.getSeconds().toString().padStart(2,'0');
+    history.unshift({ count: n, time: timeStr });
+    if (history.length > 8) history.pop();
+    renderHistory();
+
+    setStatus('LIVE', 'analyzing');
+  }
+
+  function renderHistory() {
+    const row = document.getElementById('historyRow');
+    row.innerHTML = history.map(h =>
+      `<div class="hist-chip"><span class="n">${h.count}</span>${h.count === 1 ? 'person' : 'people'} · ${h.time}</div>`
+    ).join('');
+  }
+
+  function finishAnalysis() {
+    isAnalyzing = false;
+    analyzeBtn.classList.remove('loading');
+    scanline.classList.remove('active');
+    if (!autoMode) setStatus('READY', 'idle');
+  }
+</script>
+</body>
+</html>
